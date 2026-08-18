@@ -30,7 +30,6 @@ Domain types duplicate Prisma enums and will drift
 
 delete is a public mutation; audit FKs are ON DELETE RESTRICT
 
-
 ## Non-critical improvements
 
 Lift `Providers` into the root layout instead of remounting a `QueryClient` on every page. List → review would keep cached application data and avoid a redundant `getForReview` on every navigation.
@@ -71,22 +70,48 @@ Extra tests beyond the highest-risk suite: money parsing table (`1.10`, `1.115`,
 
 ## Implementation plan
 
-1. _Your first step_
+Scope is everything in Critical issues and Non-critical improvements except [What I will not complete within the timebox](#what-i-will-not-complete-within-the-timebox). Notifications stay in-process via `LoanNotifier` (after commit, best-effort, testable). No IdP, no Prisma/domain unification, no custom money widget, no dossier UI, no extra seed book, no observability stack.
+
+**Guarantees this plan is aiming for**
+
+- `UNDERWRITER` only; `SUPPORT` gets `FORBIDDEN` on decide.
+- `PENDING_REVIEW` + amount `<= 1_000_000` → terminal `APPROVED`; amount `> 1_000_000` → `PENDING_CONFIRMATION` with amount and proposer retained.
+- Confirm is `APPROVED` with **no** new amount, only from `PENDING_CONFIRMATION`, and never by `proposedByUserId`. Reject from either non-terminal state clears amount, keeps audit rows.
+- Persist + audit in one transaction with `UPDATE … WHERE status = expected`; races return `CONFLICT`, not a second approval. `decide` returns **persisted** status.
+- Additive migration only; existing `APPROVED` / `REJECTED` rows stay final.
+- Review screen uses inferred tRPC types and can propose / confirm / reject. A dev header switcher makes Ada vs Grace exercisable.
+
+**Steps**
+
+1. **Domain policy** — Add `PENDING_CONFIRMATION` and `proposedByUserId` on the application record/view. Pure `planLoanDecision` (threshold, amount rules, self-confirm, reject-clears-amount). Trim reason at Zod (`min(1)` after trim, no max). Positive integer amount at Zod for approvals that carry one.
+
+2. **Additive Prisma migration** — New migration: enum value `PENDING_CONFIRMATION` + nullable `proposedByUserId` (FK to `User`). Do not touch `20260809000000_init`. No backfill. Seed stays upsert-only on the existing three pending apps.
+
+3. **Repository** — Replace find/update/audit with a single transactional `applyDecision`. Optimistic lock on current status. In-memory repo matches (including rolling back when audit insert fails).
+
+4. **Router / server** — `underwriterProcedure` requires `role === "UNDERWRITER"`. Stop swallowing `TRPCError`. Log ids/status/amount only (no full application). Inject `LoanNotifier`; call `send` **after** a successful commit (`APPROVAL_PROPOSED` / `APPROVED` / `REJECTED`). Failure to notify does not roll back the decision. Lock `delete` behind `underwriterProcedure` (unused by UI, must not stay public). Session remains header-based (`x-user-id`, `x-user-role`).
+
+5. **Focused tests** — Keep the four public examples green. Add: threshold final-approve; high-value propose + notification; self-confirm `FORBIDDEN`; other underwriter confirms and preserves amount; reject from confirmation clears amount and keeps prior audit; `SUPPORT` cannot decide; whitespace reason `BAD_REQUEST`; `0` / negative amount `BAD_REQUEST`; already-decided / lost race is `CONFLICT` not `500`; audit failure does not persist the status change; notifier invoked with the expected type.
+
+6. **Review UI** — Inferred `RouterInputs` for the form. `PENDING_REVIEW`: approve (amount) / reject. `PENDING_CONFIRMATION`: read-only proposed amount; confirm (no amount) if the session user is not the proposer, else reject-only. Invalidate `getForReview` (and `list`) after success. Visible error for `FORBIDDEN` / `CONFLICT` / validation. One status class for `PENDING_CONFIRMATION`. Back link to `/`.
+
+7. **Dev session switcher** — Seeded Ada / Grace / Sam in `Providers`; persist selection; send headers on every tRPC call so dual control is clickable. Do not load `User` from the database.
+
+8. **Queue-only fixes that remain in scope** — List: `refetchInterval` + `isPending` (do not unmount the table on every poll). Shared `formatMoney` helper. Do **not** lift `Providers`, do **not** remove checkboxes / `pageSize = 2`, do **not** restyle the list.
+
+9. **Verify** — `pnpm test`, `pnpm lint`, `pnpm format:check`, `pnpm build`.
 
 ## What I will not complete within the timebox
 
-
 **From Critical issues — real problems, wrong spend for this slice**
 
+1. **Review screen as a full underwriting dossier (actor name, audit timeline, monthly income; list tax id / gender).** TASK requires the screen to _represent the workflow_ (propose vs confirm vs reject, proposed amount, useful errors). Reconstructing history is already the audit table’s job; rendering it, and reshaping PII columns, is product polish. Income is not in the business rules.
 
-1. **Review screen as a full underwriting dossier (actor name, audit timeline, monthly income; list tax id / gender).** TASK requires the screen to *represent the workflow* (propose vs confirm vs reject, proposed amount, useful errors). Reconstructing history is already the audit table’s job; rendering it, and reshaping PII columns, is product polish. Income is not in the business rules.
-
-2. **Real authentication / loading the `User` row instead of headers.** Dual control only needs two distinct underwriter ids in session. The seed and `x-user-id` / `x-user-role` already exist for that. Replacing headers with an IdP, sessions, or a DB-backed principal is production identity work TASK does not ask for. (A tiny *dev* user switcher that *sends* those headers is in scope if we cannot otherwise confirm as Grace; looking up `"Development User"` is not.)
+2. **Real authentication / loading the `User` row instead of headers.** Dual control only needs two distinct underwriter ids in session. The seed and `x-user-id` / `x-user-role` already exist for that. Replacing headers with an IdP, sessions, or a DB-backed principal is production identity work TASK does not ask for. (A tiny _dev_ user switcher that _sends_ those headers is in scope if we cannot otherwise confirm as Grace; looking up `"Development User"` is not.)
 
 3. **Unifying domain unions with Prisma enums.** Drift is a maintenance risk. Adding `PENDING_CONFIRMATION` in both places is enough for the migration and the router. A single source of truth is a refactor with merge risk and no extra guarantee in 90 minutes.
 
 4. **IEEE 754–proof money widget (`type="number"` → parsed string / minor-unit field).** Exactness is enforced where it must be: Zod + integer minor units + DB `Int`. The existing form already converts via `Math.round(n * 100)` and has a public test. A custom parser, inline error catalog, and a11y pass on the input are not what fails `app-high-value` today.
-
 
 **From Non-critical improvements — redundant or out of scoring**
 
@@ -94,7 +119,7 @@ Extra tests beyond the highest-risk suite: money parsing table (`1.10`, `1.115`,
 
 6. **Row checkboxes, `pageSize = 2`, selection count, `getRowId`.** Dead chrome on an unscored list. Removing it is cleanup; wiring bulk actions is a different product.
 
-7. **Support-specific read-only UI and field-level PII split (hide tax id on the list, income only for underwriters).** The requirement is `role === UNDERWRITER` on *record decision*. Support is already a 403 if we fix `underwriterProcedure`. A second UI skin is redundant.
+7. **Support-specific read-only UI and field-level PII split (hide tax id on the list, income only for underwriters).** The requirement is `role === UNDERWRITER` on _record decision_. Support is already a 403 if we fix `underwriterProcedure`. A second UI skin is redundant.
 
 8. **`aria-live` success theatre and extra status CSS as a project.** Invalidate the review query and show the new status; that is enough accessible feedback. A dedicated `PENDING_CONFIRMATION` chip style is welcome if it is one class, not a design pass.
 
@@ -104,9 +129,9 @@ Extra tests beyond the highest-risk suite: money parsing table (`1.10`, `1.115`,
 
 11. **Server-side pagination and a `status` index.** Three (or a handful of) rows. Client `list()` is the intended size of this repo.
 
-12. **Redis: use it or delete it.** Compose leftover. TASK says notification *infrastructure* is out of scope; Redis is not required for an in-process `LoanNotifier`.
+12. **Redis: use it or delete it.** Compose leftover. TASK says notification _infrastructure_ is out of scope; Redis is not required for an in-process `LoanNotifier`.
 
-13. **Broad extra tests (money parsing matrix, polling unmount, support `getForReview`, etc.).** TASK asks for a *focused* suite on the highest risks: threshold vs high-value, self-confirm denied, reject clears amount, support cannot decide, conflict/transaction, notifier calls. The rest remains unverified on purpose.
+13. **Broad extra tests (money parsing matrix, polling unmount, support `getForReview`, etc.).** TASK asks for a _focused_ suite on the highest risks: threshold vs high-value, self-confirm denied, reject clears amount, support cannot decide, conflict/transaction, notifier calls. The rest remains unverified on purpose.
 
 14. **Observability stack, outbox, rate limits, idempotency keys, bigint amounts.** Already in Production readiness / Known limitations. Implementing metrics, traces, alerts, or a notification worker would consume the entire timebox and is explicitly not obligated.
 
@@ -161,8 +186,8 @@ Schema changes must be additive (`TASK.md`): do not edit `20260809000000_init`. 
 
 **Order (expand → code → contract)**
 
-1. Ship a Prisma migration that only *adds*: `PENDING_CONFIRMATION` on `LoanApplicationStatus`, plus whatever nullable bookkeeping is required (for example `proposedByUserId`). PostgreSQL `ALTER TYPE ... ADD VALUE` is the dangerous part — it is easy to roll *forward* and painful to roll *back*. Apply this in a maintenance window or as a standalone expand step, and wait until it has run on every environment before the API writes the new value.
-2. Deploy API that *reads* the new enum (and unknown statuses as non-decidable) while still only *writing* the old three statuses. Old web continues to work: it already treats anything other than `PENDING_REVIEW` as “already processed”.
+1. Ship a Prisma migration that only _adds_: `PENDING_CONFIRMATION` on `LoanApplicationStatus`, plus whatever nullable bookkeeping is required (for example `proposedByUserId`). PostgreSQL `ALTER TYPE ... ADD VALUE` is the dangerous part — it is easy to roll _forward_ and painful to roll _back_. Apply this in a maintenance window or as a standalone expand step, and wait until it has run on every environment before the API writes the new value.
+2. Deploy API that _reads_ the new enum (and unknown statuses as non-decidable) while still only _writing_ the old three statuses. Old web continues to work: it already treats anything other than `PENDING_REVIEW` as “already processed”.
 3. Deploy API that writes `PENDING_CONFIRMATION`, enforces dual control, and emits notifications. tRPC response `status` must be the persisted status, not `input.decision`, or the UI will show `APPROVED` for a proposal.
 4. Deploy web that can propose / confirm / reject and render the new status. Because tRPC types are compiled in, API and web should be released as a pair once the input/output shapes change; until then keep the decide input backward compatible (`APPROVED` | `REJECTED` plus optional amount).
 5. Re-run seed only in non-prod; it must remain upsert-safe on a populated database.
@@ -176,7 +201,7 @@ Schema changes must be additive (`TASK.md`): do not edit `20260809000000_init`. 
 **Rollback**
 
 - Prefer rolling back **application code** (API then web, or the combined release) and **leaving the migration in place**. Forward-only schema. An unused enum value and a nullable column are harmless to the old slice (`PENDING_REVIEW` → `APPROVED` | `REJECTED`).
-- Do not attempt to remove a PostgreSQL enum value as a rollback step. If a row has already been written as `PENDING_CONFIRMATION` and we roll back the API, the old handler will refuse further decisions (`status !== PENDING_REVIEW`) and those loans cannot be confirmed until the new API is restored. Mitigation: feature-flag the *write* of `PENDING_CONFIRMATION` (threshold still computed, but behind a flag defaulting off until web is live), or pause high-value decisions during the cutover.
+- Do not attempt to remove a PostgreSQL enum value as a rollback step. If a row has already been written as `PENDING_CONFIRMATION` and we roll back the API, the old handler will refuse further decisions (`status !== PENDING_REVIEW`) and those loans cannot be confirmed until the new API is restored. Mitigation: feature-flag the _write_ of `PENDING_CONFIRMATION` (threshold still computed, but behind a flag defaulting off until web is live), or pause high-value decisions during the cutover.
 - Notifications: if `send` is after commit, rollback of code does not unsend. Document as at-least-once; do not put notification I/O in the decision transaction unless we are willing to fail the business write on a stub/network error.
 - Data rollback is not “delete the migration”. Compensating action if a bad build final-approved high-value loans: manual ops via audit trail (who approved, amounts), not a silent status rewrite. Reinterpreting `APPROVED` as pending confirmation is forbidden by the task.
 
@@ -187,12 +212,6 @@ Schema changes must be additive (`TASK.md`): do not edit `20260809000000_init`. 
 - Proposer cannot confirm; second underwriter can; reject from either non-terminal state clears `approvedAmountMinor` and keeps audit rows.
 - Support user cannot `decide`.
 - Existing prod-like `APPROVED` rows still read as approved after migrate.
-
-
-
-
-
-
 
 ### Known limitations
 
@@ -209,4 +228,3 @@ Schema changes must be additive (`TASK.md`): do not edit `20260809000000_init`. 
 - Observability described above is not wired; today you only have Fastify logs (unsafe) and `/health`.
 - Tests in this exercise can prove handler rules and a fake notifier; they will not prove production Postgres isolation, notification transport, or browser-vs-API clock issues unless we add slower integration tests later.
 - Timebox: completing dual control, atomic audit, money/authz validation, and a focused test set is more important than the non-critical UI list. Anything in “Non-critical improvements” that we do not ship remains a known UX/ops gap, not a silent claim of production completeness.
-

@@ -1,0 +1,3 @@
+export function formatMoney(minor: number) {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "EUR" }).format(minor / 100);
+}

@@ -9,15 +9,12 @@ import {
   type RowSelectionState,
 } from "@tanstack/react-table";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
+import { formatMoney } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 
 const columnHelper = createColumnHelper<LoanApplicationView>();
-
-function formatMoney(minor: number) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "EUR" }).format(minor / 100);
-}
 
 const columns = [
   columnHelper.display({
@@ -65,7 +62,9 @@ const columns = [
 ];
 
 export function ApplicationsList() {
-  const applicationsQuery = trpc.loanApplications.list.useQuery();
+  const applicationsQuery = trpc.loanApplications.list.useQuery(undefined, {
+    refetchInterval: 5_000,
+  });
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [pageIndex, setPageIndex] = useState(0);
   const pageSize = 2;
@@ -75,14 +74,6 @@ export function ApplicationsList() {
     () => applications.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize),
     [applications, pageIndex],
   );
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      void applicationsQuery.refetch();
-    }, 5_000);
-
-    return () => window.clearInterval(interval);
-  }, [applicationsQuery]);
 
   const table = useReactTable({
     data: pageApplications,
@@ -94,7 +85,7 @@ export function ApplicationsList() {
     onRowSelectionChange: setRowSelection,
   });
 
-  if (applicationsQuery.isFetching) {
+  if (applicationsQuery.isPending) {
     return <main className="shell applications-shell">Loading applications…</main>;
   }
 

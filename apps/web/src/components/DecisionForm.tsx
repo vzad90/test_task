@@ -1,25 +1,29 @@
 "use client";
 
+import type { DecideLoanApplicationInput } from "@loan-review/api/router";
 import { useState, type FormEvent } from "react";
 
-export interface DecisionFormValue {
-  decision: "APPROVED" | "REJECTED";
-  approvedAmountMinor?: number;
-  reason: string;
-}
+export type DecisionFormValue = Omit<DecideLoanApplicationInput, "applicationId">;
 
 interface DecisionFormProps {
   requestedAmountMinor: number;
+  variant?: "review" | "confirm";
+  canConfirm?: boolean;
   disabled?: boolean;
   onSubmit(value: DecisionFormValue): Promise<void> | void;
 }
 
 export function DecisionForm({
   requestedAmountMinor,
+  variant = "review",
+  canConfirm = true,
   disabled = false,
   onSubmit,
 }: DecisionFormProps) {
-  const [decision, setDecision] = useState<DecisionFormValue["decision"]>("APPROVED");
+  const confirmation = variant === "confirm";
+  const [decision, setDecision] = useState<DecisionFormValue["decision"]>(
+    confirmation && !canConfirm ? "REJECTED" : "APPROVED",
+  );
   const [approvedAmount, setApprovedAmount] = useState("");
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -29,7 +33,7 @@ export function DecisionForm({
     setSubmitting(true);
     try {
       const value: DecisionFormValue =
-        decision === "APPROVED"
+        decision === "APPROVED" && !confirmation
           ? { decision, approvedAmountMinor: Math.round(Number(approvedAmount) * 100), reason }
           : { decision, reason };
       await onSubmit(value);
@@ -41,17 +45,21 @@ export function DecisionForm({
   return (
     <form className="decision-form" onSubmit={(event) => void handleSubmit(event)}>
       <fieldset disabled={disabled || submitting}>
-        <legend>Decision</legend>
-        <label className="radio-row">
-          <input
-            checked={decision === "APPROVED"}
-            name="decision"
-            onChange={() => setDecision("APPROVED")}
-            type="radio"
-            value="APPROVED"
-          />
-          Approve
-        </label>
+        <legend>{confirmation ? "Confirmation" : "Decision"}</legend>
+        {confirmation && !canConfirm ? (
+          <p className="notice">You proposed this approval. Another underwriter must confirm it.</p>
+        ) : (
+          <label className="radio-row">
+            <input
+              checked={decision === "APPROVED"}
+              name="decision"
+              onChange={() => setDecision("APPROVED")}
+              type="radio"
+              value="APPROVED"
+            />
+            {confirmation ? "Confirm approval" : "Approve"}
+          </label>
+        )}
         <label className="radio-row">
           <input
             checked={decision === "REJECTED"}
@@ -63,7 +71,7 @@ export function DecisionForm({
           Reject
         </label>
 
-        {decision === "APPROVED" ? (
+        {decision === "APPROVED" && !confirmation ? (
           <label>
             Approved amount
             <span className="input-affix">

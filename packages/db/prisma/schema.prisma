@@ -14,6 +14,7 @@ enum UserRole {
 
 enum LoanApplicationStatus {
   PENDING_REVIEW
+  PENDING_CONFIRMATION
   APPROVED
   REJECTED
 }
@@ -23,6 +24,7 @@ model User {
   name      String
   role      UserRole
   decisions LoanDecisionAudit[]
+  proposals LoanApplication[]   @relation("ProposedBy")
   createdAt DateTime            @default(now())
 }
 
@@ -39,9 +41,11 @@ model LoanApplication {
   customerPhone        String
   customerNationalId   String
   monthlyIncomeMinor   Int
+  proposedByUserId     String?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   decisions            LoanDecisionAudit[]
+  proposedBy           User?                 @relation("ProposedBy", fields: [proposedByUserId], references: [id])
 }
 
 model LoanDecisionAudit {

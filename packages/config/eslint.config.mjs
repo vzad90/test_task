@@ -3,13 +3,14 @@ import globals from "globals";
 import process from "node:process";
 import tseslint from "typescript-eslint";
 
-const defaultProjectFiles = process.cwd().endsWith("/apps/api")
+const cwd = process.cwd().replaceAll("\\", "/");
+const defaultProjectFiles = cwd.endsWith("/apps/api")
   ? [
       "../../apps/api/test/public/*.ts",
       "../../apps/api/test/support/*.ts",
       "../../apps/api/vitest.config.ts",
     ]
-  : process.cwd().endsWith("/packages/db")
+  : cwd.endsWith("/packages/db")
     ? ["../db/prisma/*.ts", "../db/prisma.config.ts"]
     : undefined;
 
